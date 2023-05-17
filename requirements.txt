@@ -36,4 +36,5 @@ frozendict
 streamlit-chat
 openai
 transformer_lens
+pytorch_lightning
 git+https://github.com/callummcdougall/CircuitsVis.git#subdirectory=python
