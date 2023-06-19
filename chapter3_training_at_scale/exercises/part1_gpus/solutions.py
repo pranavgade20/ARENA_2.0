@@ -61,8 +61,8 @@ if MAIN:
 	
 	with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
 		with record_function("model_inference"):
-		with torch.inference_mode():
-			model(inputs)
+			with torch.inference_mode():
+				model(inputs)
 	
 	print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 	
@@ -89,8 +89,8 @@ if MAIN:
 	
 	with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
 		with record_function("model_inference"):
-		with torch.inference_mode():
-			model(inputs)
+			with torch.inference_mode():
+				model(inputs)
 	print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
 # %%
@@ -149,10 +149,10 @@ if MAIN:
 
 # %% 2️⃣ KERNEL FUSION AND BENCHMARKING
 
-def daxpy(alpha,x,y):
-
 if MAIN:
-	return alpha*x + y
+	def daxpy(alpha,x,y):
+
+		return alpha*x + y
 	
 @torch.jit.script
 def fused_daxpy(alpha,x,y):
@@ -358,8 +358,7 @@ if MAIN:
 # %%
 
 
-if MAIN:
-	QTensor = namedtuple('QTensor', ['tensor', 'scale', 'zero_point'])
+QTensor = namedtuple('QTensor', ['tensor', 'scale', 'zero_point'])
 	
 def quantize_tensor(x, min_val=None, max_val=None, num_bits=8) -> QTensor:
 	'''
@@ -428,7 +427,7 @@ def calcScaleZeroPoint(min_val, max_val, num_bits=8) -> Tuple[float, float]:
 # %%
 
 # Get Min and max of x tensor, and stores it
-def updateStats(x, stats, key) -> Dict[Dict]:
+def updateStats(x, stats, key) -> Dict[str, Dict[str, int]]:
 	max_val, _ = torch.max(x, dim=1)
 	min_val, _ = torch.min(x, dim=1)
 	
@@ -474,7 +473,7 @@ def gatherStats(model, test_loader):
 	
 	final_stats = {}
 	for key, value in stats.items():
-	final_stats[key] = { "max" : value["max"] / value["total"], "min" : value["min"] / value["total"] }
+		final_stats[key] = { "max" : value["max"] / value["total"], "min" : value["min"] / value["total"] }
 	return final_stats
 
 # %%
@@ -525,7 +524,32 @@ def quantizeLayer(x, layer, stat, scale_x, zp_x) -> Tuple[torch.tensor, float, f
 	layer.bias.data = B
 
 	return x, scale_next, zero_point_next
+# %%
 
+def quantForward(model, x, stats):
+    '''
+    Quantise before inputting into incoming layers
+    '''
+    x = quantize_tensor(x, min_val = stats['conv1']['min'], max_val = stats['conv1']['max'])
+
+    x, scale_next, zero_point_next = quantizeLayer(x.tensor, model.conv1, stats['conv2'], x.scale, x.zero_point)
+
+    x = F.max_pool2d(x, 2, 2)
+
+    x, scale_next, zero_point_next = quantizeLayer(x, model.conv2, stats['fc1'], scale_next, zero_point_next)
+
+    x = F.max_pool2d(x, 2, 2)
+
+    x = x.view(-1, 4*4*50)
+
+    x, scale_next, zero_point_next = quantizeLayer(x, model.fc1, stats['fc2'], scale_next, zero_point_next)
+
+    # Back to dequant for final layer
+    x = dequantize_tensor(QTensor(tensor=x, scale=scale_next, zero_point=zero_point_next))
+
+    x = model.fc2(x)
+
+    return F.log_softmax(x, dim=1)
 # %%
 
 def testQuant(model, test_loader, device='cuda', quant=False, stats=None):
@@ -538,9 +562,9 @@ def testQuant(model, test_loader, device='cuda', quant=False, stats=None):
 		for data, target in test_loader:
 			data, target = data.to(device), target.to(device)
 			if quant:
-			output = quantForward(model, data, stats)
+				output = quantForward(model, data, stats)
 			else:
-			output = model(data)
+				output = model(data)
 			test_loss += F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
 			pred = output.argmax(dim=1, keepdim=True) #bm get the index of the max log-probability
 			correct += pred.eq(target.view_as(pred)).sum().item()
@@ -556,5 +580,26 @@ def testQuant(model, test_loader, device='cuda', quant=False, stats=None):
 if MAIN:
 	testQuant(model, test_loader=test_loader, quant=True, stats=stats)
 
-# %% 4️⃣ BONUS SECTION
+# %%
 
+# SOLUTION
+if MAIN:
+	num_threads = 1 # Change to see different benchmarking results
+	print(f'Benchmarking on {num_threads} threads')
+
+	t0 = benchmark.Timer(
+		stmt='test(model, test_loader, device=\'cpu\')',
+		setup='from __main__ import test, model, test_loader',
+		num_threads=num_threads,
+		label='Vanilla model')
+
+	t1 = benchmark.Timer(
+		stmt='testQuant(q_model, test_loader, quant=True, stats=stats, device=\'cpu\')',
+		setup='from __main__ import testQuant, q_model, test_loader, stats',
+		num_threads=num_threads,
+		label='INT8 Quantized model')
+
+
+	print(t0.timeit(5))
+	print(t1.timeit(5))
+# %%
