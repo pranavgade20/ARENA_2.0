@@ -99,6 +99,7 @@ Distributed GPU training is a valuable skill in the modern era of machine learni
 
 
 ```python
+import sys
 import os; os.environ["ACCELERATE_DISABLE_RICH"] = "1"
 import torch
 from torch import distributed as dist
@@ -187,19 +188,20 @@ A process can be thought of as an instance of a computer program that is being e
 Threads are the smallest units of execution within a process. All threads within a process share the same memory space, which allows them to read from and write to the same variables and data structures, facilitating easy communication between threads. However, this shared memory space can lead to issues such as race conditions, which must be managed using locks, semaphores, or other synchronization techniques. In PyTorch, computations on the tensors are multithreaded by default, meaning that operations can use multiple CPU cores for improved performance.
 
 ### Ranks
-In PyTorch's distributed package, a "rank" is a unique identifier given to each process involved in the distributed computation. This is how one process refers to another when they need to communicate or coordinate in some way. The process with rank 0 is typically considered the "master" process and is often used to coordinate the actions of the other "worker" processes. However, all processes can communicate with each other directly, so this is more of a convention than a strict hierarchy. Rank assignment is generally determined by the order in which the processes are launched. In both `torch.distributed` and our fake distributed class, note that you can access the current rank for an instance `dist` using `dist.get_rank()` which returns an integer from `0` to `world_size-1` where `world_size` is the number of GPUs, threads, or other devices based on the distributed class being used.
+In PyTorch's distributed package, a "rank" is a unique identifier given to each process involved in the distributed computation. This is how one process refers to another when they need to communicate or coordinate in some way. The process with rank 0 is typically considered the "main" process and is often used to coordinate the actions of the other "worker" processes. However, all processes can communicate with each other directly, so this is more of a convention than a strict hierarchy. Rank assignment is generally determined by the order in which the processes are launched. In both `torch.distributed` and our fake distributed class, note that you can access the current rank for an instance `dist` using `dist.get_rank()` which returns an integer from `0` to `world_size-1` where `world_size` is the number of GPUs, threads, or other devices based on the distributed class being used.
 
 These concepts provide the foundation for distributed computing in PyTorch, where multiple processes, each potentially running on different computational resources and containing multiple threads, can work together to perform computations on large datasets or complex models.
 
 
 ## Comparing `nccl` and alternatives
 
-`gloo`: Gloo, developed by Facebook, is a library that is equipped to support both CPU and GPU operations. However, its GPU function significantly trails in speed compared to NVIDIA's NCCL. A key merit of Gloo is its superior error message system, making it useful for debugging before transitioning to NCCL.
+The torch.distributed package in PyTorch supports multiple backends like NCCL (NVIDIA Collective Communications Library) and Gloo to cater to different needs and use-cases in distributed computing. The torch.distributed package (`init_process_group`) can be initialized with one of these backends specified as a parameter, and this backend provides the implementation of data transfer between devices.
 
-`nccl`: On the other hand, NCCL (pronounced 'nickel') is the brainchild of NVIDIA. It is exclusively tailored for NVIDIA GPUs, demonstrating the high level of optimization and specialization for NVIDIA's GPU and products like NVLink and NVSwitch.
+`nccl`: Pronounced 'nickel', this is the brainchild of NVIDIA. It is exclusively tailored for NVIDIA GPUs, demonstrating the high level of optimization and specialization for NVIDIA's GPU and products like NVLink and NVSwitch. This backend is designed and optimized specifically for NVIDIA GPUs, and it provides routines that are fundamental to constructing multi-GPU and multi-node deep learning applications. NCCL provides fast inter-GPU communication and is especially beneficial when using multiple GPUs on a single node or across multiple nodes for deep learning tasks. It handles operations like all-reduce, all-gather, reduce, broadcast, etc., on multi-dimensional tensors very efficiently.
+
+`gloo`: Gloo, developed by Facebook, is a library that is equipped to support both CPU and GPU operations. However, Gloo is not specific to NVIDIA GPUs and is a more general-purpose library for distributed computing, and its GPU function significantly trails in speed compared to NVIDIA's NCCL. A key merit of Gloo is its superior error message system, making it useful for debugging before transitioning to NCCL. It's beneficial for tasks where the NCCL backend might not be applicable or optimal, especially for CPU operations.
 
 `mpi`: Meanwhile, MPI, an abbreviation for Message Passing Interface, is not a specific library but an open standard dating back to the 90s. Unlike Gloo and NCCL, MPI is primarily designed for clusters with thousands of CPUs. It won't be applicable in our present context.
-
 
 ## Race conditions
 
@@ -213,7 +215,7 @@ To avoid such race conditions, strategies such as locking or synchronization bar
 ### Exercise - Test simulated race conditions on multiple threads
 
 ```c
-Difficulty: 🟠⚪⚪⚪⚪
+Difficulty: 🟠🟠⚪⚪⚪
 Importance: 🟠🟠🟠⚪⚪
 
 You should spend up to 5 minutes on this exercise.
@@ -272,7 +274,7 @@ You can read more about these operations, as well as other popular collective op
 
 ## Implementing collective operations
 
-Here, we will implement broadcast, reduce, and all-reduce using multiple topologies to explore the efficiency of different implementations.
+Here, we will implement broadcast, reduce, and all-reduce using multiple topologies to explore the efficiency of different implementations. The main building blocks of these exercises will be <code>torch.distributed.send()</code> and <code>torch.distributed.recv()</code>, more informations on these can be found [here](https://pytorch.org/docs/stable/distributed.html#point-to-point-communication)
 
 
 ### Exercise - Broadcast
@@ -661,7 +663,7 @@ As N increases, the minibatch size B/N becomes too small to fully utilize the GP
 
 
 
-Here's a template that implements a naive broadcast algorithm - you'll be using the same setup/teardown code everywhere, so it's worth spending some time here trying to understand what is happening - create a new file called broadcast.py, and run it with `run.sh broadcast.py`
+Here's a template that implements a naive broadcast algorithm - you'll be using the same setup/teardown code everywhere, so it's worth spending some time here trying to understand what is happening - create a new file called broadcast.py, and run it with `run-on-server.sh broadcast.py`
 
 
 ```python
@@ -781,6 +783,8 @@ We often have really large datasets and/or models that would take forever to tra
   
 You might want to start by copying the setup/teardown template from broadcast.py. Then, follow the instructions above to write a forward pass. Remember to use dist.all_reduce to average loss/accuracy after each minibatch's forward pass before you log it.
 
+From this point onwards in this chapter all code will be executed as individual python files. Also they will need to be executed using the <code>run.sh</code> file like so: <code>run.sh <example.py></code>.
+
 ```c
 Difficulty: 🟠🟠🟠🟠⚪
 Importance: 🟠🟠🟠🟠🟠
@@ -830,7 +834,7 @@ def main(args):
     logging.warning(f'distributed.is_gloo_available {torch.distributed.is_gloo_available()}')
     logging.warning(f'distributed.is_torchelastic_launched {torch.distributed.is_torchelastic_launched()}')
 
-    resnet34 = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
+    resnet34 = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1).eval()
     file_mappings = json.load(open('/home/ubuntu/file_mappings_imagenet.json'))
     logging.warning("Loading Data:")
 
@@ -872,27 +876,28 @@ if __name__ == '__main__':
  
  
 ```python 
-    dataloader = DataLoader(imagenet_valset, shuffle=True, batch_size=32, num_workers=4, pin_memory=True, pin_memory_device='cuda:'+str(0 if UNIGPU else rank))
-    resnet34 = resnet34.to(device='cuda:'+str(0 if UNIGPU else rank))
-    losses = []
-    accuracies = []
+    
+dataloader = DataLoader(imagenet_valset, shuffle=True, batch_size=32, num_workers=4, pin_memory=True, pin_memory_device='cuda:'+str(0 if UNIGPU else rank))
+resnet34 = resnet34.to(device='cuda:'+str(0 if UNIGPU else rank))
+losses = []
+accuracies = []
 
-    with torch.no_grad():
-        for x, y in dataloader:
-            x = x.to(device='cuda:'+str(0 if UNIGPU else rank))
-            y = y.to(device='cuda:'+str(0 if UNIGPU else rank))
-            y_hat = resnet34(x)
-            loss = torch.nn.functional.cross_entropy(y_hat, y)
-            accuracy = (y_hat.argmax(1) == y).float().mean()
-            # logging.warning(f'loss {loss}')
-            dist.reduce(loss, 0, op=dist.ReduceOp.AVG)  # average the loss across all processes
-            dist.reduce(accuracy, 0, op=dist.ReduceOp.AVG)  # average the accuracy across all processes
-            losses.append(loss.item())
-            accuracies.append(accuracy.item())
+with torch.no_grad():
+    for x, y in dataloader:
+        x = x.to(device='cuda:'+str(0 if UNIGPU else rank))
+        y = y.to(device='cuda:'+str(0 if UNIGPU else rank))
+        y_hat = resnet34(x)
+        loss = torch.nn.functional.cross_entropy(y_hat, y)
+        accuracy = (y_hat.argmax(1) == y).float().mean()
+        # logging.warning(f'loss {loss}')
+        dist.reduce(loss, 0, op=dist.ReduceOp.AVG)  # average the loss across all processes
+        dist.reduce(accuracy, 0, op=dist.ReduceOp.AVG)  # average the accuracy across all processes
+        losses.append(loss.item())
+        accuracies.append(accuracy.item())
 
-    if rank == 0:
-        logging.warning(f'average loss {t.tensor(losses).mean()}')
-        logging.warning(f'average accuracy {t.tensor(accuracies).mean()}')
+if rank == 0:
+    logging.warning(f'average loss {t.tensor(losses).mean()}')
+    logging.warning(f'average accuracy {t.tensor(accuracies).mean()}')
  ```
 </details>
 
@@ -1007,44 +1012,44 @@ if __name__ == '__main__':
 
 
 ```python
-    dataloader = DataLoader(imagenet_valset, shuffle=True, batch_size=256, num_workers=4, pin_memory=True, pin_memory_device='cuda:'+str(0 if UNIGPU else rank))
-    resnet34 = resnet34.to(device='cuda:'+str(0 if UNIGPU else rank))
-    resnet34.train()
-    losses = []
-    accuracies = []
+dataloader = DataLoader(imagenet_valset, shuffle=True, batch_size=256, num_workers=4, pin_memory=True, pin_memory_device='cuda:'+str(0 if UNIGPU else rank))
+resnet34 = resnet34.to(device='cuda:'+str(0 if UNIGPU else rank))
+resnet34.train()
+losses = []
+accuracies = []
 
-    optim = torch.optim.Adam(resnet34.parameters(), lr=1e-6)
+optim = torch.optim.Adam(resnet34.parameters(), lr=1e-6)
 
-    for i in range(args.epochs):
-        logging.warning(f'epoch {i}')
-        if rank == 0:
-            dataloader = tqdm.tqdm(dataloader)
-        for x, y in dataloader:
-            resnet34.zero_grad()
-            # optim.zero_grad()  # what's the difference?
+for i in range(args.epochs):
+    logging.warning(f'epoch {i}')
+    if rank == 0:
+        dataloader = tqdm.tqdm(dataloader)
+    for x, y in dataloader:
+        resnet34.zero_grad()
+        # optim.zero_grad()  # what's the difference?
 
-            x = x.to(device='cuda:'+str(0 if UNIGPU else rank))
-            y = y.to(device='cuda:'+str(0 if UNIGPU else rank))
-            y_hat = resnet34(x)
-            loss = torch.nn.functional.cross_entropy(y_hat, y)
+        x = x.to(device='cuda:'+str(0 if UNIGPU else rank))
+        y = y.to(device='cuda:'+str(0 if UNIGPU else rank))
+        y_hat = resnet34(x)
+        loss = torch.nn.functional.cross_entropy(y_hat, y)
 
-            loss.backward()
+        loss.backward()
 
-            for p in resnet34.parameters():
-                dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)  # sum the gradients across all processes
-                p.grad = p.grad / TOTAL_RANKS  # average the gradients across all processes - alternatively, you can tweak the batch size:learning rate ratio to achieve the same effect
+        for p in resnet34.parameters():
+            dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)  # sum the gradients across all processes
+            p.grad = p.grad / TOTAL_RANKS  # average the gradients across all processes - alternatively, you can tweak the batch size:learning rate ratio to achieve the same effect
 
-            optim.step()
+        optim.step()
 
-            accuracy = (y_hat.argmax(1) == y).float().mean()
-            dist.reduce(loss, 0, op=dist.ReduceOp.AVG)  # average the loss across all processes
-            dist.reduce(accuracy, 0, op=dist.ReduceOp.AVG)  # average the accuracy across all processes
-            losses.append(loss.item())
-            accuracies.append(accuracy.item())
+        accuracy = (y_hat.argmax(1) == y).float().mean()
+        dist.reduce(loss, 0, op=dist.ReduceOp.AVG)  # average the loss across all processes
+        dist.reduce(accuracy, 0, op=dist.ReduceOp.AVG)  # average the accuracy across all processes
+        losses.append(loss.item())
+        accuracies.append(accuracy.item())
 
-        if rank == 0:
-            logging.warning(f'average loss {t.tensor(losses).mean()}')
-            logging.warning(f'average accuracy {t.tensor(accuracies).mean()}')
+    if rank == 0:
+        logging.warning(f'average loss {t.tensor(losses).mean()}')
+        logging.warning(f'average accuracy {t.tensor(accuracies).mean()}')
 </details>
 
 """, unsafe_allow_html=True)
@@ -1571,10 +1576,10 @@ In the second scheme, each device can take a partition of `x` and computes parti
 ### Exercise - Tensor parallelism for bias parameter
 
 ```c
-Difficulty: 🟠⚪⚪⚪⚪
+Difficulty: 🟠🟠⚪⚪⚪
 Importance: 🟠🟠⚪⚪⚪
 
-You should spend up to 3-5 minutes on this exercise.
+You should spend up to 5-10 minutes on this exercise.
 ```
 
 We have described partitioning the weight parameter above. In each scheme, how would you partition the bias parameter?

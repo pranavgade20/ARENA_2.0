@@ -5,31 +5,24 @@ os.environ["ACCELERATE_DISABLE_RICH"] = "1"
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
-import random
 import time
 import sys
-import re
-import pandas as pd
 from dataclasses import dataclass
 from tqdm import tqdm
 import numpy as np
 from numpy.random import Generator
-import plotly.express as px
 import torch as t
 from torch import Tensor
 from torch.optim.optimizer import Optimizer
-from torch.utils.data import Dataset
 import gym
 from gym.envs.classic_control.cartpole import CartPoleEnv
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
-from gym.spaces import Discrete
 import einops
-import copy
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Union, Callable, Optional
-from jaxtyping import Float, Int, Bool
+from typing import List, Tuple, Literal
+from jaxtyping import Float, Int
 import wandb
 from IPython.display import clear_output
 
@@ -39,9 +32,9 @@ exercises_dir = Path(f"{os.getcwd().split(chapter)[0]}/{chapter}/exercises").res
 section_dir = exercises_dir / "part3_ppo"
 if str(exercises_dir) not in sys.path: sys.path.append(str(exercises_dir))
 
-from part1_intro_to_rl.utils import make_env
 from part2_dqn.utils import set_global_seeds
 from part2_dqn.solutions import Probe1, Probe2, Probe3, Probe4, Probe5
+from part3_ppo.utils import make_env
 import part3_ppo.utils as utils
 import part3_ppo.tests as tests
 from plotly_utils import plot_cartpole_obs_and_dones
@@ -50,11 +43,18 @@ from plotly_utils import plot_cartpole_obs_and_dones
 for idx, probe in enumerate([Probe1, Probe2, Probe3, Probe4, Probe5]):
 	gym.envs.registration.register(id=f"Probe{idx+1}-v0", entry_point=probe)
 
+# If we don't want to run all the training code, this is useful
+RUN_TRAINING = ["Breakout"]
+
 Arr = np.ndarray
 
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
 
 MAIN = __name__ == "__main__"
+
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module='gym.*')
+warnings.filterwarnings("ignore", category=UserWarning, module='gym.*')
 
 # %%
 
@@ -81,12 +81,13 @@ class PPOArgs:
 	ent_coef: float = 0.01
 	vf_coef: float = 0.5
 	max_grad_norm: float = 0.5
-	batch_size: int = 512
 	minibatch_size: int = 128
+	mode: Literal["classic-control", "atari", "mujoco"] = "classic-control"
 
 	def __post_init__(self):
+		self.batch_size = self.num_steps * self.num_envs
 		assert self.batch_size % self.minibatch_size == 0, "batch_size must be divisible by minibatch_size"
-		self.total_epochs = self.total_timesteps // (self.num_steps * self.num_envs)
+		self.total_epochs = self.total_timesteps // self.batch_size
 		self.total_training_steps = self.total_epochs * self.batches_per_epoch * (self.batch_size // self.minibatch_size)
 
 
@@ -103,31 +104,72 @@ def layer_init(layer: nn.Linear, std=np.sqrt(2), bias_const=0.0):
 	return layer
 
 
-def get_actor_and_critic(envs: gym.vector.SyncVectorEnv) -> Tuple[nn.Module, nn.Module]:
+def get_actor_and_critic(
+	envs: gym.vector.SyncVectorEnv,
+	mode: Literal["classic-control", "atari", "mujoco"] = "classic-control",
+) -> Tuple[nn.Module, nn.Module]:
 	'''
 	Returns (actor, critic), the networks used for PPO.
 	'''
 	obs_shape = envs.single_observation_space.shape
 	num_obs = np.array(obs_shape).prod()
-	num_actions = envs.single_action_space.n
+	num_actions = (
+		envs.single_action_space.n 
+		if isinstance(envs.single_action_space, gym.spaces.Discrete) 
+		else envs.single_action_space.shape[0]
+	)
 
-	critic = nn.Sequential(
-		layer_init(nn.Linear(num_obs, 64)),
-		nn.Tanh(),
-		layer_init(nn.Linear(64, 64)),
-		nn.Tanh(),
-		layer_init(nn.Linear(64, 1), std=1.0)
-	).to(device)
+	if mode == "classic-control":
 
-	actor = nn.Sequential(
-		layer_init(nn.Linear(num_obs, 64)),
-		nn.Tanh(),
-		layer_init(nn.Linear(64, 64)),
-		nn.Tanh(),
-		layer_init(nn.Linear(64, num_actions), std=0.01)
-	).to(device)
+		critic = nn.Sequential(
+			layer_init(nn.Linear(num_obs, 64)),
+			nn.Tanh(),
+			layer_init(nn.Linear(64, 64)),
+			nn.Tanh(),
+			layer_init(nn.Linear(64, 1), std=1.0)
+		)
 
-	return actor, critic
+		actor = nn.Sequential(
+			layer_init(nn.Linear(num_obs, 64)),
+			nn.Tanh(),
+			layer_init(nn.Linear(64, 64)),
+			nn.Tanh(),
+			layer_init(nn.Linear(64, num_actions), std=0.01)
+		)
+		
+	elif mode == "atari":
+		assert obs_shape[-1] % 8 == 4
+
+		L_after_convolutions = (obs_shape[-1] // 8) - 3
+		in_features = 64 * L_after_convolutions * L_after_convolutions
+
+		hidden = nn.Sequential(
+			layer_init(nn.Conv2d(4, 32, 8, stride=4, padding=0)),
+			nn.ReLU(),
+			layer_init(nn.Conv2d(32, 64, 4, stride=2, padding=0)),
+			nn.ReLU(),
+			layer_init(nn.Conv2d(64, 64, 3, stride=1, padding=0)),
+			nn.ReLU(),
+			nn.Flatten(),
+			layer_init(nn.Linear(in_features, 512)),
+			nn.ReLU(),
+		)
+		actor = nn.Sequential(
+			hidden,
+			layer_init(nn.Linear(512, num_actions), std=0.01)
+		)
+		critic = nn.Sequential(
+			hidden,
+			layer_init(nn.Linear(512, 1), std=1)
+		)
+	
+	elif mode == "mujoco":
+		raise NotImplementedError("See `solutions_cts.py`.")
+	
+	else:
+		raise ValueError(f"Unknown mode {mode}")
+
+	return actor.to(device), critic.to(device)
 
 
 
@@ -165,9 +207,9 @@ def compute_advantages(
 	return advantages
 
 
-
 if MAIN:
 	tests.test_compute_advantages(compute_advantages)
+
 
 # %%
 
@@ -268,6 +310,8 @@ if MAIN:
 
 # %%
 
+
+
 @dataclass
 class ReplayBufferSamples:
 	'''
@@ -293,6 +337,7 @@ class ReplayBuffer:
 		self.rng = np.random.default_rng(args.seed)
 		self.num_envs = envs.num_envs
 		self.obs_shape = envs.single_observation_space.shape
+		self.action_shape = envs.single_action_space.shape
 		self.gamma = args.gamma
 		self.gae_lambda = args.gae_lambda
 		self.batch_size = args.batch_size
@@ -302,8 +347,10 @@ class ReplayBuffer:
 		self.experiences = []
 
 
-	def add(self, obs: t.Tensor, actions: t.Tensor, rewards: t.Tensor, dones: t.Tensor, logprobs: t.Tensor, values: t.Tensor) -> None:
+	def add(self, obs, actions, rewards, dones, logprobs, values) -> None:
 		'''
+		Each argument can be a PyTorch tensor or NumPy array.
+
 		obs: shape (n_envs, *observation_shape) 
 			Observation before the action
 		actions: shape (n_envs,) 
@@ -318,17 +365,21 @@ class ReplayBuffer:
 			Values, estimated by the critic (according to old policy)
 		'''
 		assert obs.shape == (self.num_envs, *self.obs_shape)
-		assert actions.shape == (self.num_envs,)
+		assert actions.shape == (self.num_envs, *self.action_shape)
 		assert rewards.shape == (self.num_envs,)
 		assert dones.shape == (self.num_envs,)
 		assert logprobs.shape == (self.num_envs,)
 		assert values.shape == (self.num_envs,)
 
-		self.experiences.append((obs, dones, actions, logprobs, values, rewards))
+		new_experiences_as_tensors = [
+			t.from_numpy(d) if isinstance(d, np.ndarray) else d
+			for d in (obs, dones, actions, logprobs, values, rewards)
+		]
+		self.experiences.append(new_experiences_as_tensors)
 
 
 	def get_minibatches(self, next_value: t.Tensor, next_done: t.Tensor) -> List[ReplayBufferSamples]:
-		minibatches = []
+		minibatches = []	
 
 		# Turn all experiences to tensors on our device (we only want to do this once, not every time we add a new experience)
 		obs, dones, actions, logprobs, values, rewards = [t.stack(arr).to(device) for arr in zip(*self.experiences)]
@@ -347,7 +398,7 @@ class ReplayBuffer:
 			# Get our new list of minibatches, and add them to the list
 			for index in indices:
 				minibatch = ReplayBufferSamples(*[
-					arg.flatten(0, 1)[index].to(device) for arg in replaybuffer_args
+					arg.flatten(0, 1)[index] for arg in replaybuffer_args
 				])
 				minibatches.append(minibatch)
 
@@ -365,19 +416,18 @@ if MAIN:
 	next_value = t.zeros(envs.num_envs).to(device)
 	next_done = t.zeros(envs.num_envs).to(device)
 	rb = ReplayBuffer(args, envs)
-	actions = t.zeros(envs.num_envs).int().to(device)
 	obs = envs.reset()
 	
 	for i in range(args.num_steps):
-		(next_obs, rewards, dones, infos) = envs.step(actions.cpu().numpy())
-		real_next_obs = next_obs.copy()
-		for (i, done) in enumerate(dones):
-			if done: real_next_obs[i] = infos[i]["terminal_observation"]
+		actions = envs.action_space.sample()
+		(next_obs, rewards, dones, infos) = envs.step(actions)
+		# just dummy values for now, we won't be using them
 		logprobs = values = t.zeros(envs.num_envs)
-		rb.add(t.from_numpy(obs).to(device), actions, t.from_numpy(rewards).to(device), t.from_numpy(dones).to(device), logprobs, values)
+		# turn everything into a tensor
+		rb.add(obs, actions, rewards, dones, logprobs, values)
 		obs = next_obs
 	
-	obs, dones, actions, logprobs, values, rewards = [t.stack(arr).to(device) for arr in zip(*rb.experiences)]
+	obs, dones, actions, logprobs, values, rewards = [t.stack(arr) for arr in zip(*rb.experiences)]
 	
 	plot_cartpole_obs_and_dones(obs, dones, show_env_jumps=True)
 
@@ -402,19 +452,16 @@ class PPOAgent(nn.Module):
 		super().__init__()
 		self.args = args
 		self.envs = envs
-		self.num_envs = envs.num_envs
-		self.obs_shape = envs.single_observation_space.shape
-		self.num_obs = np.array(self.obs_shape).prod()
-		self.num_actions = envs.single_action_space.n
 
 		# Keep track of global number of steps taken by agent
 		self.steps = 0
-		# Define actor and critic (using our previous methods)
-		self.actor, self.critic = get_actor_and_critic(envs)
+
+		# Get actor and critic networks
+		self.actor, self.critic = get_actor_and_critic(envs, mode=args.mode)
 
 		# Define our first (obs, done, value), so we can start adding experiences to our replay buffer
-		self.next_obs = t.tensor(self.envs.reset()).to(device)
-		self.next_done = t.zeros(self.envs.num_envs).to(device, dtype=t.float)
+		self.next_obs = t.tensor(envs.reset()).to(device, dtype=t.float)
+		self.next_done = t.zeros(envs.num_envs).to(device, dtype=t.float)
 
 		# Create our replay buffer
 		self.rb = ReplayBuffer(args, envs)
@@ -424,6 +471,7 @@ class PPOAgent(nn.Module):
 		'''
 		Carries out a single interaction step between the agent and the environment, and adds results to the replay buffer.
 		'''
+		# SOLUTION
 		obs = self.next_obs
 		dones = self.next_done
 		with t.inference_mode():
@@ -434,17 +482,16 @@ class PPOAgent(nn.Module):
 		actions = probs.sample()
 		logprobs = probs.log_prob(actions)
 		next_obs, rewards, next_dones, infos = self.envs.step(actions.cpu().numpy())
-		rewards = t.from_numpy(rewards).to(device)
 
 		# (s_t, a_t, r_t+1, d_t, logpi(a_t|s_t), v(s_t))
 		self.rb.add(obs, actions, rewards, dones, logprobs, values)
 
-		self.next_obs = t.from_numpy(next_obs).to(device)
+		self.next_obs = t.from_numpy(next_obs).to(device, dtype=t.float)
 		self.next_done = t.from_numpy(next_dones).to(device, dtype=t.float)
-		self.steps += self.num_envs
+		self.steps += self.envs.num_envs
 
 		return infos
-	
+		
 
 	def get_minibatches(self) -> None:
 		'''
@@ -525,6 +572,7 @@ def calc_value_function_loss(
 if MAIN:
 	tests.test_calc_value_function_loss(calc_value_function_loss)
 
+
 # %%
 
 def calc_entropy_bonus(probs: Categorical, ent_coef: float):
@@ -578,21 +626,23 @@ if MAIN:
 class PPOTrainer:
 
 	def __init__(self, args: PPOArgs):
-		super().__init__()
-		self.args = args
 		set_global_seeds(args.seed)
+		self.args = args
 		self.run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-		self.envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed + i, i, args.capture_video, self.run_name) for i in range(args.num_envs)])
+		self.envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed + i, i, args.capture_video, self.run_name, args.mode) for i in range(args.num_envs)])
 		self.agent = PPOAgent(self.args, self.envs).to(device)
 		self.optimizer, self.scheduler = make_optimizer(self.agent, self.args.total_training_steps, self.args.learning_rate, 0.0)
-		if args.use_wandb:
-			wandb.init(project=args.wandb_project_name, entity=args.wandb_entity, name=self.run_name)
-			if args.capture_video: wandb.gym.monitor()
+		if args.use_wandb: wandb.init(
+            project=args.wandb_project_name,
+            entity=args.wandb_entity,
+            name=self.run_name,
+            monitor_gym=args.capture_video
+        )
 
 
 	def rollout_phase(self):
 		'''Should populate the replay buffer with new experiences.'''
-        # SOLUTION
+		# SOLUTION
 		last_episode_len = None
 		for step in range(self.args.num_steps):
 			infos = self.agent.play_step()
@@ -600,11 +650,11 @@ class PPOTrainer:
 				if "episode" in info.keys():
 					last_episode_len = info["episode"]["l"]
 					last_episode_return = info["episode"]["r"]
-					if args.use_wandb: wandb.log({
+					if self.args.use_wandb: wandb.log({
 						"episode_length": last_episode_len,
 						"episode_return": last_episode_return,
 					}, step=self.agent.steps)
-		# Return this for use in the progress bar
+		# Return last_episode_len for use in the progress bar
 		return last_episode_len
 
 
@@ -615,7 +665,7 @@ class PPOTrainer:
 		for minibatch in minibatches:
 			objective_fn = self._compute_ppo_objective(minibatch)
 			objective_fn.backward()
-			nn.utils.clip_grad_norm_(self.agent.parameters(), args.max_grad_norm)
+			nn.utils.clip_grad_norm_(self.agent.parameters(), self.args.max_grad_norm)
 			self.optimizer.step()
 			self.optimizer.zero_grad()
 			self.scheduler.step()
@@ -639,7 +689,7 @@ class PPOTrainer:
 			ratio = logratio.exp()
 			approx_kl = (ratio - 1 - logratio).mean().item()
 			clipfracs = [((ratio - 1.0).abs() > self.args.clip_coef).float().mean().item()]
-		if args.use_wandb: wandb.log(dict(
+		if self.args.use_wandb: wandb.log(dict(
 			total_steps = self.agent.steps,
 			values = values.mean().item(),
 			learning_rate = self.scheduler.optimizer.param_groups[0]["lr"],
@@ -668,18 +718,12 @@ def train(args: PPOArgs) -> PPOAgent:
 
 		trainer.learning_phase()
 		
-	args = PPOArgs()
+	if args.use_wandb:
+		wandb.finish()
 
 	return trainer.agent
 
 # %%
-
-if MAIN:
-	args = PPOArgs(use_wandb=True)
-	agent = train(args)
-
-# %%
-
 
 def test_probe(probe_idx: int):
 
@@ -712,9 +756,16 @@ def test_probe(probe_idx: int):
 		t.testing.assert_close(probs, t.tensor(expected_probs).to(device), atol=tolerances[probe_idx-1], rtol=0)
 	clear_output()
 	print("Probe tests passed!")
-		
+
+
 if MAIN:
 	test_probe(1)
+
+# %%
+
+if MAIN and ("CartPole" in RUN_TRAINING):
+	args = PPOArgs(use_wandb=True)
+	agent = train(args)
 
 # %%
 
@@ -726,15 +777,18 @@ class EasyCart(CartPoleEnv):
 		x, v, theta, omega = obs
 
 		# First reward: angle should be close to zero
-		reward_1 = 1 - abs(theta / 0.2095)
+		rew_1 = 1 - abs(theta / 0.2095)
 		# Second reward: position should be close to the center
-		reward_2 = 1 - abs(x / 2.4)
+		rew_2 = 1 - abs(x / 2.4)
 
-		return (obs, reward_2, done, info)
+		rew_new = (rew_1 + rew_2) / 2
 
-if MAIN:
+		return (obs, rew_new, done, info)
+
+# %%
+
+if MAIN and ("EasyCart" in RUN_TRAINING):
 	gym.envs.registration.register(id="EasyCart-v0", entry_point=EasyCart, max_episode_steps=500)
-
 	args = PPOArgs(env_id="EasyCart-v0", use_wandb=True)
 	agent = train(args)
 
@@ -746,16 +800,43 @@ class SpinCart(CartPoleEnv):
 		obs, rew, done, info = super().step(action)
 		# YOUR CODE HERE
 		x, v, theta, omega = obs
-		# Allow for 360-degree rotation
+		# Allow for 360-degree rotation, but not for going off the edge of the map
 		done = (abs(x) > self.x_threshold)
 		# Reward function incentivises fast spinning while staying still & near centre
 		rotation_speed_reward = min(1, 0.1*abs(omega))
 		stability_penalty = max(1, abs(x/2.5) + abs(v/10))
 		reward = rotation_speed_reward - 0.5 * stability_penalty
+
 		return (obs, reward, done, info)
 		
-if MAIN:
-	gym.envs.registration.register(id="SpinCart-v0", entry_point=SpinCart, max_episode_steps=500)
+# %%
 
+if MAIN and ("SpinCart" in RUN_TRAINING):
+	gym.envs.registration.register(id="SpinCart-v0", entry_point=SpinCart, max_episode_steps=500)
 	args = PPOArgs(env_id="SpinCart-v0", use_wandb=True)
 	agent = train(args)
+
+
+
+
+
+# %% ATARI
+
+if MAIN:
+	tests.test_get_actor_and_critic(get_actor_and_critic, mode="atari")
+
+# %%
+
+if MAIN and ("Breakout" in RUN_TRAINING):
+	args = PPOArgs(
+		env_id = "ALE/Breakout-v5",
+		wandb_project_name = "PPOAtari",
+		use_wandb = True,
+		mode = "atari",
+		clip_coef = 0.1,
+		num_envs = 8,
+	)
+
+	agent = train(args)
+
+# %%

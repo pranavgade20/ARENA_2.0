@@ -2,11 +2,9 @@
 import gym
 import numpy as np
 from typing import List
-import argparse
-import os
 import random
 import torch as t
-from typing import Optional
+from typing import Optional, Literal
 from dataclasses import dataclass
 import pandas as pd
 from IPython.display import display
@@ -16,9 +14,26 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from einops import rearrange
 
+from part3_ppo.atari_wrappers import (
+    NoopResetEnv,
+    MaxAndSkipEnv,
+    EpisodicLifeEnv,
+    FireResetEnv, # only if "FIRE" is in env.unwrapped.get_action_meanings()
+    ClipRewardEnv,
+)
+from gym.wrappers import (
+    FrameStack,
+    ResizeObservation,
+    GrayScaleObservation,
+)
+
 # %%
-def make_env(env_id: str, seed: int, idx: int, capture_video: bool, run_name: str):
+
+
+def make_env(env_id: str, seed: int, idx: int, capture_video: bool, run_name: str, mode: str = "classic-control"):
     """Return a function that returns an environment after setting up boilerplate."""
+
+    step_trigger = 20_000 if (mode == "mujoco") else 10_000
     
     def thunk():
         env = gym.make(env_id)
@@ -28,8 +43,14 @@ def make_env(env_id: str, seed: int, idx: int, capture_video: bool, run_name: st
                 env = gym.wrappers.RecordVideo(
                     env, 
                     f"videos/{run_name}", 
-                    step_trigger=lambda x : x % 5000 == 0 # Video every 5000 steps for env #1
+                    step_trigger=lambda x : x % step_trigger == 0
                 )
+
+        if mode == "atari":
+            env = prepare_atari_env(env)
+        elif mode == "mujoco":
+            env = prepare_mujoco_env(env)
+        
         obs = env.reset(seed=seed)
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
@@ -37,10 +58,34 @@ def make_env(env_id: str, seed: int, idx: int, capture_video: bool, run_name: st
     
     return thunk
 
+
+def prepare_atari_env(env: gym.Env):
+    env = NoopResetEnv(env, noop_max=30)
+    env = MaxAndSkipEnv(env, skip=4)
+    env = EpisodicLifeEnv(env)
+    if "FIRE" in env.unwrapped.get_action_meanings():
+        env = FireResetEnv(env)
+    env = ClipRewardEnv(env)
+    env = ResizeObservation(env, shape=(84, 84))
+    env = GrayScaleObservation(env)
+    env = FrameStack(env, num_stack=4)
+    return env
+
+
+def prepare_mujoco_env(env: gym.Env):
+    env = gym.wrappers.ClipAction(env)
+    env = gym.wrappers.NormalizeObservation(env)
+    env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
+    env = gym.wrappers.NormalizeReward(env)
+    env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
+    return env
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     t.manual_seed(seed)
+
 
 def window_avg(arr: Arr, window: int):
     """
@@ -119,6 +164,7 @@ class PPOArgs:
     max_grad_norm: float = 0.5
     batch_size: int = 512
     minibatch_size: int = 128
+    mode: Literal["classic-control", "atari", "mujoco"] = "classic-control"
 
 arg_help_strings = dict(
     exp_name = "the name of this experiment",
@@ -143,6 +189,7 @@ arg_help_strings = dict(
     max_grad_norm = "value used in gradient clipping",
     batch_size = "number of random samples we take from the rollout data",
     minibatch_size = "size of each minibatch we perform a gradient step on",
+    mode = "can be 'classic-control', 'atari' or 'mujoco'"
 )
 
 def arg_help(args: Optional[PPOArgs], print_df=False):

@@ -32,6 +32,7 @@ st.sidebar.markdown(r"""
     <li class="margtop"><ul class="contents">
         <li><a class="contents-el" href="#option-1-vscode">Option 1: VSCode</a></li>
         <li><a class="contents-el" href="#option-2-colab">Option 2: Colab</a></li>
+        <li><a class="contents-el" href="#running-the-page-locally">Running the page locally</a></li>
         <li><a class="contents-el" href="#chatbot-assistant">Chatbot assistant</a></li>
     </ul></li>
     <li class="margtop"><a class="contents-el" href="#hints">Hints</a></li>
@@ -55,7 +56,13 @@ Some highlights from this chapter include:
 * Quantizing your model to INT8 for blazing fast inference
 * Implementing distributed training loops using `torch.dist`
 * Getting hands on with Huggingface Accelerate and Microsoft DeepsSpeed
-
+""", unsafe_allow_html=True)
+    
+    st.error(r"""
+Note - this section will be updated significantly with new content, some time in the coming month. I currently expect the new content to be released by Friday 28th July (current date as of writing this message is 6th July).
+""")
+    
+    st.markdown(r"""
 ---
 
 ## About this page
@@ -280,28 +287,17 @@ This option is recommended if either of the following is true:
 * You have limited access to GPU support
 * You want to avoid the hassle of setting up your own environment
 
-You can see all files in [this Google Drive folder](https://drive.google.com/drive/folders/1N5BbZVh5_pZ3sH1lv4krp-2_wJrB-Ahg?usp=share_link). Also, you can get individual links in the dropdown below.
+Colab links are coming soon (will probably be available by some point in the first week of July).
 
-<details>
-<summary>Click this dropdown for links to each of the colab exercises.</summary>
+### Running the page locally
 
-<div style='text-align: center'>
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/bandit.png" width="160" style="margin-bottom:3px;margin-top:15px">
+Rather than accessing this page via url, you can run it locally on your machine. To do this, take the following steps:
 
-Intro to RL<br>[**exercises**](https://colab.research.google.com/drive/1H9xSZ1W6U36NsqpzapDeu8RjmMQ9vyyx) | [**solutions**](https://colab.research.google.com/drive/1_KbxLVtugLSFQcGuwHPAMMj-7Lt5w20k)
+* Clone the main [ARENA GitHub repo](https://github.com/callummcdougall/ARENA_2.0)
+* Make sure streamlit is installed (`pip install streamlit`)
+* Navigate to the `chapter3_training_at_scale/instructions` folder and run `streamlit run Home.py`.
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/dqn.png" width="160" style="margin-bottom:3px;margin-top:15px">
-
-Deep Q-Learning<br>[**exercises**](https://colab.research.google.com/drive/1SmYxyb3aIqP8VI684jwvE6C7_6seOasz) | [**solutions**](https://colab.research.google.com/drive/1OCifbztO_XAj53y_gSsP_NO5WoCBPlQl)
-
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/football.jpeg" width="160" style="margin-bottom:3px;margin-top:15px">
-
-Proximal Policy Optimization<br>[**exercises**](https://colab.research.google.com/drive/1USZJy9HCpq8rsAqfD6yYfpAfZvO5YDha) | [**solutions**](https://colab.research.google.com/drive/1f_RBuosHddwQrydZ7-iAnBs6lhkMMMSG)
-</div>
-
-</details>
-
-For each of these sections, you can make a copy of the **exercises** notebooks in your own drive, and fill in the code cells whenever indicated. The solutions will be available in dropdowns next to each of the code cells (or you can look at the **solutions** notebooks, which have all code pre-run and output displayed).
+This should open a page in your browser that looks like the one you're currently viewing.
 
 ### Chatbot assistant
 
@@ -309,7 +305,15 @@ We've created an experimental chatbot assistant to help you answer questions abo
 
 You can see example questions to ask the chatbot if you navigate to the chatbot page.
 
-This feature is very experimental, so please [let me know](mailto:cal.s.mcdougall@gmail.com) if you have any feedback!
+If you run the page locally and add your own OpenAI API key, you can also get access to the GPT-4 version of the chatbot (rather than just the 3.5 or davinci versions). 
+
+To run the page locally, see the previous section. To add your own API key, take the following steps:
+
+* Go to the [OpenAI API keys page](https://platform.openai.com/account/api-keys), to generate your own API key.
+* Create a file called `secrets.toml` which looks like `openai_api_key = "sk-<rest-of-your-key>"`. Save it as `chapter3_training_at_scale/instructions/.streamlit/secrets.toml`.
+* Run the page like normally, and the chatbot feature should be enabled.
+
+This feature is very experimental, so please [let us know](mailto:cal.s.mcdougall@gmail.com) if you have any feedback!
 
 ## Hints
 

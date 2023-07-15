@@ -43,7 +43,7 @@ st.sidebar.markdown(r"""
 </ul></li>""", unsafe_allow_html=True)
 
 st.markdown(r"""
-# [1.∞] Reference Page
+# [1.A] Reference Page
 
 This page contains links to a bunch of things (blog posts, diagrams, tables) as well as guides and code references, all of which are useful to have at hand when doing this chapter.
 
@@ -81,7 +81,7 @@ This page contains links to a bunch of things (blog posts, diagrams, tables) as 
 
 [Link to excalidraw](https://link.excalidraw.com/l/9KwMnW35Xt8/6PEWgOPSxXH) for the diagram below.
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/transformer-full-red.png" width="1200">
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/transformer-full-updated.png" width="1200">
 
 ## Quick reference
 
