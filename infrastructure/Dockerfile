@@ -34,7 +34,7 @@ RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
 COPY infrastructure/arena_ssh /root/.ssh/
 RUN pwd && find ~/.ssh && chmod 0600 ~/.ssh/arena_ssh  # just in case perms were messed up
 COPY infrastructure/arena_ssh.pub /root/.ssh/
-RUN cd $HOME && git clone --depth 1 -b main git@github.com:callummcdougall/ARENA_2.0.git
+RUN cd $HOME && git clone --depth 1 -b main https://github.com/callummcdougall/ARENA_2.0.git
 
 # Install the repo dependencies
 ARG ENV_PATH=~/ARENA_2.0/.env/
